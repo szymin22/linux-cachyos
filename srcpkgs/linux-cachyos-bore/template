@@ -1,0 +1,220 @@
+# Template file for 'linux-cachyos-bore'
+pkgname=linux-cachyos-bore
+# Update _cachyos_commit (and version) when pulling new commits from 7.1/base.
+# To get the latest commit: git ls-remote https://github.com/CachyOS/linux refs/heads/7.1/base
+version=7.1.1
+revision=1
+_kseries=7.1
+_cachyos_commit=58652ee5715396af8f6abefed78608a7c139d814
+_kernver="${version}-cachyos-bore_${revision}"
+short_desc="Linux ${_kseries} kernel with CachyOS patchset and BORE scheduler"
+maintainer="Void Linux User <user@localhost>"
+license="GPL-2.0-only"
+homepage="https://github.com/CachyOS/linux"
+
+distfiles="
+ https://github.com/CachyOS/linux/archive/${_cachyos_commit}.tar.gz>linux-cachyos-${_kseries}-${_cachyos_commit:0:8}.tar.gz
+ https://raw.githubusercontent.com/CachyOS/kernel-patches/master/${_kseries}/sched/0001-bore-cachy.patch
+ https://raw.githubusercontent.com/CachyOS/linux-cachyos/master/linux-cachyos-bore/config>cachyos-bore-config.txt"
+checksum="9a12d5f8f21954289f85614e1ed3373f92bcf56bfb8841bf389bac7a94f1b9c6
+ 345ed557d0eac4e55ccc3552f97601873f774c6a282d27bfdb236dc817285c17
+ ceb8555c560c02d891125a2248bbccde5f25db43f7aadd59a98593b35f98a6b0"
+
+archs="x86_64*"
+
+nodebug=yes
+nostrip=yes
+noverifyrdeps=yes
+noshlibprovides=yes
+preserve=yes
+
+hostmakedepends="bc flex bison perl python3 openssl-devel pahole zstd xz cpio tar patch elfutils-devel kmod"
+makedepends="openssl-devel"
+
+triggers="kernel-hooks"
+kernel_hooks_version="${_kernver}"
+
+# These files are modified when external modules (e.g. NVIDIA DKMS) are built.
+mutable_files="
+ /usr/lib/modules/${_kernver}/modules.builtin.bin
+ /usr/lib/modules/${_kernver}/modules.builtin.alias.bin
+ /usr/lib/modules/${_kernver}/modules.softdep
+ /usr/lib/modules/${_kernver}/modules.dep
+ /usr/lib/modules/${_kernver}/modules.dep.bin
+ /usr/lib/modules/${_kernver}/modules.symbols
+ /usr/lib/modules/${_kernver}/modules.symbols.bin
+ /usr/lib/modules/${_kernver}/modules.alias
+ /usr/lib/modules/${_kernver}/modules.alias.bin
+ /usr/lib/modules/${_kernver}/modules.devname"
+
+subpackages="linux-cachyos-bore-headers"
+
+# reproducible build
+export KBUILD_BUILD_TIMESTAMP=$(LC_ALL=C date -ud @${SOURCE_DATE_EPOCH:-0})
+export KBUILD_BUILD_USER=voidlinux
+export KBUILD_BUILD_HOST=voidlinux
+
+post_extract() {
+	# The kernel source is nested inside linux-${_cachyos_commit}/ within
+	# the default wrksrc. Flatten it so build steps can find the Makefile.
+	shopt -s dotglob
+	mv "linux-${_cachyos_commit}"/* .
+	shopt -u dotglob
+	rmdir "linux-${_cachyos_commit}"
+}
+
+do_configure() {
+	cp "${XBPS_SRCDISTDIR}/${pkgname}-${version}/cachyos-bore-config.txt" .config
+
+	# BORE is already in-tree in the CachyOS 7.1/base fork
+
+	# Match CONFIG_LOCALVERSION to _kernver so kernelrelease == _kernver
+	sed -i "s|^\(CONFIG_LOCALVERSION=\).*|\1\"-cachyos-bore_${revision}\"|" .config
+	sed -i "s|^\(CONFIG_LOCALVERSION_AUTO\)=y|\1=n|" .config
+
+	make ARCH=x86_64 olddefconfig
+
+	# Disable module signing — required for DKMS (nvidia, etc.)
+	sed -i "s|^\(CONFIG_MODULE_SIG\)=y|\1=n|" .config
+	sed -i "s|^\(CONFIG_MODULE_SIG\)=m|\1=n|" .config
+	sed -i "s|^\(CONFIG_MODULE_SIG_ALL\)=y|\1=n|" .config
+	sed -i "s|^\(CONFIG_MODULE_SIG_ALL\)=m|\1=n|" .config
+
+	# Enable BORE and latency-optimised settings
+	sed -i "s|^# \(CONFIG_SCHED_BORE\) is not set|\1=y|" .config
+	sed -i "s|^\(CONFIG_SCHED_BORE\)=m|\1=y|" .config
+	sed -i "s|^# \(CONFIG_HZ_1000\) is not set|\1=y|" .config
+	sed -i "s|^\(CONFIG_HZ_1000\)=m|\1=y|" .config
+	sed -i "s|^# \(CONFIG_PREEMPT_DYNAMIC\) is not set|\1=y|" .config
+	sed -i "s|^\(CONFIG_PREEMPT_DYNAMIC\)=m|\1=y|" .config
+
+	# Disable AMDGPU driver (incomplete dc_plane_cm types in CachyOS 7.1/base)
+	sed -i "s|^\(CONFIG_DRM_AMDGPU\)=m|\1=n|" .config
+	sed -i "s|^# \(CONFIG_DRM_AMDGPU\) is not set|\1=n|" .config
+
+	make ARCH=x86_64 olddefconfig
+}
+
+do_build() {
+	export LDFLAGS=
+	export KCFLAGS="-ffile-prefix-map=${wrksrc}=."
+	make ARCH=x86_64 ${makejobs} prepare
+	make ARCH=x86_64 ${makejobs} bzImage modules
+}
+
+do_install() {
+	local hdrdest
+
+	# Make depmod.sh a noop (we run depmod manually later)
+	sed -i '2iexit 0' scripts/depmod.sh
+
+	vmkdir usr/lib
+	ln -sf usr/lib/ "${DESTDIR}"
+
+	# Install modules
+	make ARCH=x86_64 INSTALL_MOD_PATH="${DESTDIR}" modules_install
+
+	hdrdest="${DESTDIR}/usr/src/kernel-headers-${_kernver}"
+
+	vinstall .config       644 boot "config-${_kernver}"
+	vinstall System.map    644 boot "System.map-${_kernver}"
+	vinstall arch/x86/boot/bzImage 644 boot "vmlinuz-${_kernver}"
+
+	# Sanity check: modules_install should create /lib/modules/${_kernver}
+	# because kernelrelease == _kernver.  If not, try to fix up.
+	if [ ! -d "${DESTDIR}/lib/modules/${_kernver}" ]; then
+		local _moddir
+		_moddir="$(ls -1 "${DESTDIR}/lib/modules" 2>/dev/null | head -1)"
+		if [ -n "$_moddir" ]; then
+			msg_warn "modules dir is '$_moddir', expected '$_kernver', renaming\n"
+			mv "${DESTDIR}/lib/modules/$_moddir" \
+			   "${DESTDIR}/lib/modules/${_kernver}"
+		fi
+	fi
+
+	# Remove firmware shipped by linux-firmware package
+	rm -rf "${DESTDIR}/usr/lib/firmware"
+
+	# Build symlink for DKMS
+	vmkdir usr
+	cd "${DESTDIR}/usr/lib/modules/${_kernver}"
+	rm -f source build
+	ln -sf "../../../src/kernel-headers-${_kernver}" build
+
+	cd "${wrksrc}"
+
+	# ---- Install headers for out-of-tree module builds (DKMS) ----
+	mkdir -p "${hdrdest}"
+	install -Dm644 Makefile   "${hdrdest}/Makefile"
+	install -Dm644 Kbuild     "${hdrdest}/Kbuild"
+	install -Dm644 kernel/Makefile "${hdrdest}/kernel/Makefile"
+	install -Dm644 .config    "${hdrdest}/.config"
+
+	for f in $(find . -name Kconfig\*); do
+		mkdir -p "${hdrdest}/$(dirname "$f")"
+		install -Dm644 "$f" "${hdrdest}/${f}"
+	done
+
+	for f in $(find arch/x86 scripts -name module.lds -o -name Kbuild.platforms -o -name Platform); do
+		mkdir -p "${hdrdest}/$(dirname "$f")"
+		install -Dm644 "$f" "${hdrdest}/${f}"
+	done
+
+	# Main kernel headers
+	mkdir -p "${hdrdest}/include"
+	for i in acpi asm-generic clocksource config crypto drm generated linux vdso \
+		math-emu media net pcmcia scsi sound trace uapi video xen dt-bindings hyperv keys; do
+		[ -d "include/$i" ] && cp -a "include/$i" "${hdrdest}/include/"
+	done
+
+	# Arch headers
+	mkdir -p "${hdrdest}/arch/x86"
+	cp -a arch/x86/include "${hdrdest}/arch/x86/"
+	if [ -d arch/x86/tools ]; then
+		cp -a arch/x86/tools "${hdrdest}/arch/x86/"
+	fi
+
+	# Build prerequisites for external modules
+	cp Module.symvers "${hdrdest}/"
+	cp -a scripts     "${hdrdest}/"
+
+	mkdir -p "${hdrdest}/security/selinux"
+	cp -a security/selinux/include "${hdrdest}/security/selinux/"
+
+	mkdir -p "${hdrdest}/tools/include"
+	cp -a tools/include/tools "${hdrdest}/tools/include/"
+
+	[ -f kernel/time/timeconst.bc ] && cp -a kernel/time/timeconst.bc "${hdrdest}/kernel/time/"
+	[ -f kernel/bounds.c ]         && cp -a kernel/bounds.c          "${hdrdest}/kernel/"
+
+	# Syscall tables
+	mkdir -p "${hdrdest}/arch/x86/entry/syscalls"
+	cp -a arch/x86/entry/syscalls/syscall_32.tbl "${hdrdest}/arch/x86/entry/syscalls/"
+
+	# asm-offsets (generated during build)
+	mkdir -p "${hdrdest}/arch/x86/kernel"
+	[ -f arch/x86/kernel/asm-offsets.s ] && cp -a arch/x86/kernel/asm-offsets.s "${hdrdest}/arch/x86/kernel/"
+	cp arch/x86/Makefile "${hdrdest}/arch/x86/"
+
+	# objtool binary (needed by some DKMS modules)
+	mkdir -p "${hdrdest}/tools/objtool"
+	[ -f tools/objtool/objtool ] && cp tools/objtool/objtool "${hdrdest}/tools/objtool/"
+
+	# Compress modules with zstd and run depmod
+	msg_normal "${pkgver}: compressing modules with zstd...\n"
+	find "${DESTDIR}" -name '*.ko' -print0 | xargs -0r -n1 -P ${XBPS_MAKEJOBS} zstd -T1 --rm -f -q
+
+	depmod -b "${DESTDIR}/usr" -F System.map "${_kernver}"
+	rm -f "${DESTDIR}/lib"
+}
+
+linux-cachyos-bore-headers_package() {
+	preserve=yes
+	nostrip=yes
+	noshlibprovides=yes
+	short_desc+=" - kernel headers for DKMS"
+	pkg_install() {
+		vmove usr/src
+		vmove usr/lib/modules/${_kernver}/build
+	}
+}
