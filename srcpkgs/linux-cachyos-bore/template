@@ -59,8 +59,11 @@ post_extract() {
 	# the default wrksrc. Flatten it so build steps can find the Makefile.
 	shopt -s dotglob
 	mv "linux-${_cachyos_commit}"/* .
-	shopt -u dotglob
+		shopt -u dotglob
 	rmdir "linux-${_cachyos_commit}"
+
+	# Apply BORE scheduler patch
+	patch -p1 < "${XBPS_SRCDISTDIR}/${pkgname}-${version}/0001-bore-cachy.patch"
 }
 
 do_configure() {
