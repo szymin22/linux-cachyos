@@ -4,7 +4,7 @@
 
 CachyOS kernel with BORE scheduler packaged for Void Linux (via xbps-src).
 
-If kernel headers are wanted an symlink must be created
+If kernel headers are wanted an symlink must be created (especially when using nvidia or other DKMS modules)
 ```
 ln -s srcpkgs/linux-cachyos-bore srcpkgs/linux-cachyos-bore-headers
 ```
