@@ -4,6 +4,11 @@
 
 CachyOS kernel with BORE scheduler packaged for Void Linux (via xbps-src).
 
+If kernel headers are wanted an symlink must be created
+```
+ln -s srcpkgs/linux-cachyos-bore srcpkgs/linux-cachyos-bore-headers
+```
+
 Copy the `srcpkgs/linux-cachyos-bore/` directory into a `void-packages` checkout and build:
 
 ```
